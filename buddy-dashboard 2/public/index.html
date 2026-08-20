@@ -66,9 +66,11 @@
   .noise button{border:none;background:none;color:var(--accent);font-size:12px;border-bottom:1px dotted var(--accent)}
   .task{display:flex;gap:12px;padding:7px 0;align-items:baseline}
   .task .due{flex:0 0 92px;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:13px}
-  .goal{border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-top:8px;background:var(--bg);font-size:12.5px;color:var(--ink-2)}
-  .goal .gname{font-weight:600;font-size:13px;color:var(--ink)}
+  .goal{border:1px solid var(--border);border-radius:8px;padding:7px 10px;margin-top:6px;background:var(--bg);font-size:12px;color:var(--ink-2)}
+  .goal .gname{font-weight:600;font-size:12.5px;color:var(--ink);line-height:1.35}
+  .movesel{font:inherit;font-size:11px;color:var(--ink-2);border:1px solid var(--border);border-radius:6px;background:var(--surface);padding:2px 4px;max-width:110px;align-self:center}
   .kpigrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+  @media(min-width:861px){.kpigrid{grid-template-columns:repeat(4,1fr)}}
   .kpi{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--surface)}
   .kpi .klabel{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
   .kpi .kval{font-size:19px;font-weight:650;margin-top:2px}
@@ -92,13 +94,14 @@
   </header>
   <div class="tiles" id="tiles"></div>
   <div class="cols">
+    <div class="panel"><h2>Company Goals — H2 2026</h2><div class="src" id="goalssrc">Asana · Company Goals &amp; Delivery Plan</div><div id="goals"></div></div>
+    <div class="panel"><h2>Asana — my tasks</h2><div class="src">Today · This week · deadlines — check to complete</div><div id="asana"></div></div>
+  </div>
+  <div class="cols">
     <div class="panel"><h2>Calendar</h2><div class="src">Google Calendar · this week + key events next week</div><div id="calendar"></div></div>
     <div class="panel"><h2>Inbox — what matters</h2><div class="src" id="inboxsrc">Gmail · last 2 days</div><div id="inbox"></div></div>
   </div>
-  <div class="cols">
-    <div class="panel"><h2>Asana</h2><div class="src">Today · This week · deadlines</div><div id="asana"></div></div>
-    <div class="panel"><h2>KPIs <span class="badge b-good">LIVE</span></h2><div class="src">Buddy Analytics · trend = last 12 weeks / 14 days</div><div id="kpis"></div></div>
-  </div>
+  <div class="panel" style="margin-bottom:16px"><h2>KPIs <span class="badge b-good">LIVE</span></h2><div class="src">Buddy Analytics · trend = last 12 weeks / 14 days</div><div id="kpis"></div></div>
   <footer id="foot">Data fetched live on load and on ↻ Refresh. Gmail links assume you're signed into the receiving account. Replies go to the sender of the latest message in the thread.</footer>
 </div>
 <script>
@@ -116,18 +119,24 @@ function badgeClass(b){
 }
 
 // ---- sparkline: thin 2px line, dot on last point, no axes (recessive) ----
-function sparkline(values, good){
-  const vals = values.filter(v => v != null);
-  if(vals.length < 3) return "";
-  const min = Math.min(...vals), max = Math.max(...vals);
+function sparkline(values, good, compare){
+  const all = [...values, ...(compare||[])].filter(v => v != null);
+  if(values.filter(v=>v!=null).length < 3) return "";
+  const min = Math.min(...all), max = Math.max(...all);
   const span = (max - min) || 1;
   const W = 100, H = 28, P = 3;
-  const pts = values.map((v,i) => v == null ? null :
-    [(i/(values.length-1))*(W-2*P)+P, H-P-((v-min)/span)*(H-2*P)]).filter(Boolean);
+  const toPts = arr => arr.map((v,i) => v == null ? null :
+    [(i/(arr.length-1))*(W-2*P)+P, H-P-((v-min)/span)*(H-2*P)]).filter(Boolean);
+  const pts = toPts(values);
   const path = pts.map(p => p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
   const last = pts[pts.length-1];
   const color = good === "flat" ? "#8a919c" : good ? "#1a7f4e" : "#b3352b";
-  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">
+  let compLine = "";
+  if(compare && compare.filter(v=>v!=null).length >= 3){
+    const cp = toPts(compare).map(p => p[0].toFixed(1)+","+p[1].toFixed(1)).join(" ");
+    compLine = `<polyline points="${cp}" fill="none" stroke="#b9c0c9" stroke-width="1.5" stroke-dasharray="3 3"/>`;
+  }
+  return `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" aria-hidden="true">${compLine}
     <polyline points="${path}" fill="none" stroke="${color}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity="0.85"/>
     <circle cx="${last[0].toFixed(1)}" cy="${last[1].toFixed(1)}" r="2.5" fill="${color}"/></svg>`;
 }
@@ -137,14 +146,22 @@ function kpiTile(label, s, opts={}){
     return `<div class="kpi"><div class="klabel">${label}</div><div class="kval">unavailable</div></div>`;
   const fmt = opts.money ? money : opts.pct ? pct : v => nf.format(Math.round(v));
   const curr = s.values[s.values.length-1], prev = s.values[s.values.length-2];
+  const goodUp = opts.goodDirection !== "down";
   let deltaHtml = "", isGood = null;
   if(prev != null && prev !== 0){
     const change = (curr - prev) / Math.abs(prev);
-    const goodUp = opts.goodDirection !== "down";
     isGood = (change >= 0) === goodUp;
     deltaHtml = `<div class="kdelta ${isGood?"pos":"neg"}">${change>=0?"▲":"▼"} ${(Math.abs(change)*100).toFixed(1)}% (${fmt(prev)})</div>`;
   }
-  return `<div class="kpi"><div class="klabel">${label}</div><div class="kval">${fmt(curr)}</div>${deltaHtml}${sparkline(s.values, isGood===null?"flat":isGood)}</div>`;
+  // YoY line when a previous-year comparison series exists
+  const compLast = s.compare ? s.compare[s.compare.length-1] : null;
+  if(compLast != null && compLast !== 0){
+    const yoy = (curr - compLast) / Math.abs(compLast);
+    const yoyGood = (yoy >= 0) === goodUp;
+    isGood = yoyGood; // monthly tiles color by YoY direction
+    deltaHtml = `<div class="kdelta ${yoyGood?"pos":"neg"}">YoY ${yoy>=0?"▲":"▼"} ${(Math.abs(yoy)*100).toFixed(1)}% (${fmt(compLast)})</div>` + deltaHtml;
+  }
+  return `<div class="kpi"><div class="klabel">${label}</div><div class="kval">${fmt(curr)}</div>${deltaHtml}${sparkline(s.values, isGood===null?"flat":isGood, s.compare)}</div>`;
 }
 
 const NEXTWEEK_SKIP = /^(lunch|träning|lunchträning|gym)/i;
@@ -203,33 +220,50 @@ function renderInbox(inbox){
         <span class="hint">Svaret går till avsändaren av senaste meddelandet i tråden.</span></div>
       </div></div>`;
   });
-  html += `<div class="noise">Filtered: ${inbox.noiseCount} notification emails${inbox.dismissedCount?` · ${inbox.dismissedCount} hidden by you <button onclick="undismissAll()">show again</button>`:""}</div>`;
+  html += `<div class="noise">Filtered: ${inbox.noiseCount} notification emails${inbox.sortedOutCount?` · ${inbox.sortedOutCount} sorted out as unimportant by Claude`:""}${inbox.dismissedCount?` · ${inbox.dismissedCount} hidden by you <button onclick="undismissAll()">show again</button>`:""}</div>`;
+  return html;
+}
+
+function renderGoals(a){
+  if(!a) return "";
+  let html = `<div class="noise" style="margin-top:0">Track weekly: On track · At risk · Off track · <a href="${esc(a.projectLink)}" target="_blank">open board</a></div>`;
+  if(!a.goals.length) return html + `<div class="noise">No goals on the board yet.</div>`;
+  const bySection = {};
+  for(const g of a.goals){ (bySection[g.section] = bySection[g.section] || []).push(g); }
+  for(const sec of ["BETS","ENABLERS","WILDCARDS", ...Object.keys(bySection).filter(s=>!["BETS","ENABLERS","WILDCARDS"].includes(s))]){
+    const gs = bySection[sec] || [];
+    if(!gs.length) continue;
+    html += `<div class="day">${esc(sec)}</div>`;
+    for(const g of gs){
+      const st = g.status ? `<span class="badge ${/on.?track/i.test(g.status)?"b-good":/risk/i.test(g.status)?"b-warn":"b-serious"}">${esc(g.status)}</span>` : '<span class="badge b-neutral">no status</span>';
+      const compl = parseInt(g.completion) || 0;
+      html += `<div class="goal" title="${esc(g.comment||"")}"><div class="gname"><a href="${esc(g.link)}" target="_blank">${esc(g.name.length>70?g.name.slice(0,70)+"…":g.name)}</a> ${st}</div>
+        <div style="display:flex;align-items:center;gap:8px;margin-top:4px">
+          <span style="white-space:nowrap">${g.owner?`${esc(g.owner)} · `:""}${esc(g.completion||"0%")}${g.due?` · ${esc(g.due)}`:""}</span>
+          <span style="flex:1;height:5px;background:var(--neutral-soft);border-radius:3px"><span style="display:block;height:5px;width:${compl}%;background:var(--accent);border-radius:3px"></span></span>
+        </div></div>`;
+    }
+  }
   return html;
 }
 
 function renderAsana(a){
   if(!a) return "";
   const today = ymd(new Date().toISOString());
-  const row = t => `<div class="task"><span class="due">${esc(t.due||"—")}</span><span>
-    <a class="title" href="${esc(t.link)}" target="_blank">${esc(t.name)}</a>
-    ${t.due && t.due < today ? '<span class="badge b-serious">overdue</span>' : ""}</span></div>`;
+  const sectionSelect = t => `<select class="movesel" title="Flytta till annan sektion i My Tasks" onchange="moveTask('${esc(t.gid)}', this)">
+    ${(a.sections||[]).map(s=>`<option value="${esc(s.gid)}"${s.gid===t.sectionGid?" selected":""}>${esc(s.name)}</option>`).join("")}</select>`;
+  const row = t => `<div class="task" data-gid="${esc(t.gid)}">
+    <input type="checkbox" title="Markera som klar i Asana" style="margin-top:3px" onchange="completeTask('${esc(t.gid)}', this)">
+    <span style="flex:1">
+      <a class="title" href="${esc(t.link)}" target="_blank">${esc(t.name)}</a>
+      ${t.due ? `<span class="meta"> · ${esc(t.due)}</span>` : ""}
+      ${t.due && t.due < today ? '<span class="badge b-serious">overdue</span>' : ""}
+    </span>${sectionSelect(t)}</div>`;
   let html = "";
   if(a.today.length){ html += `<div class="day first">Today</div>` + a.today.map(row).join(""); }
-  if(a.thisWeek.length){ html += `<div class="day${a.today.length?"":" first"}">This week</div>` + a.thisWeek.map(row).join(""); }
-  html += `<div class="day${(a.today.length||a.thisWeek.length)?"":" first"}">Deadlines</div>` + a.dated.map(row).join("");
-  html += `<div class="noise">${a.openCount} open tasks in total.</div>`;
-  html += `<div class="day">Company Goals — H2 2026 · <a href="${esc(a.projectLink)}" target="_blank">open board</a></div>`;
-  if(!a.goals.length) html += `<div class="noise">No goals on the board yet.</div>`;
-  const bySection = {};
-  for(const g of a.goals){ (bySection[g.section] = bySection[g.section] || []).push(g); }
-  for(const sec of ["BETS","ENABLERS","WILDCARDS", ...Object.keys(bySection).filter(s=>!["BETS","ENABLERS","WILDCARDS"].includes(s))]){
-    for(const g of (bySection[sec]||[])){
-      const st = g.status ? `<span class="badge ${/on.?track/i.test(g.status)?"b-good":/risk/i.test(g.status)?"b-warn":"b-serious"}">${esc(g.status)}</span>` : "";
-      html += `<div class="goal"><div class="gname"><a href="${esc(g.link)}" target="_blank">${esc(g.name.length>90?g.name.slice(0,90)+"…":g.name)}</a></div>
-        ${esc(sec)}${g.owner?` · ${esc(g.owner)}`:""} ${st} ${esc(g.completion)}${g.due?` · due ${esc(g.due)}`:""}
-        ${g.comment?`<div>${esc(g.comment.length>110?g.comment.slice(0,110)+"…":g.comment)}</div>`:""}</div>`;
-    }
-  }
+  else html += `<div class="noise" style="margin-top:0">Nothing in your Today section.</div>`;
+  if(a.highPrio.length){ html += `<div class="day">High priority</div>` + a.highPrio.map(row).join(""); }
+  html += `<div class="noise">${a.openCount} open tasks in total — showing Today + Priority: High.</div>`;
   return html;
 }
 
@@ -254,7 +288,14 @@ function renderKpis(k){
       ${kpiTile("Installs", w.installs)}
       ${kpiTile("% Trial → Paying", w.trialToPaying, {pct:true})}
     </div>
-    <div class="noise" style="margin-top:12px">Latest day's subscription figures can still fill in as store data lands. % Trial→Paying reads low for recent weeks by construction.</div>`;
+    ${k.monthly ? `<div class="day">Monthly · last 12 months (${esc(lastB(k.monthly.mau))}) — grey dashed line = same months previous year</div>
+    <div class="kpigrid">
+      ${kpiTile("MAU", k.monthly.mau)}
+      ${kpiTile("MRR", k.monthly.mrr, {money:true})}
+      ${kpiTile("Net Revenue / month", k.monthly.netRevenue, {money:true})}
+      ${kpiTile("New Subscribers / month", k.monthly.newSubs)}
+    </div>` : ""}
+    <div class="noise" style="margin-top:12px">Latest day's subscription figures can still fill in as store data lands. % Trial→Paying reads low for recent weeks by construction. MAU YoY reads high across the 2025 tracking gap (May–Oct 2025 under-reads).</div>`;
 }
 
 function renderTiles(data){
@@ -281,6 +322,29 @@ async function post(url, body){
   if(!r.ok) throw new Error((await r.json().catch(()=>({}))).error || r.status);
   return r.json();
 }
+window.moveTask = async (gid, sel) => {
+  sel.disabled = true;
+  try{
+    await post("/api/asana/move", {taskGid: gid, sectionGid: sel.value});
+    load(true);
+  }catch(e){
+    sel.disabled = false;
+    alert("Could not move task: "+e.message);
+  }
+};
+window.completeTask = async (gid, cb) => {
+  const rowEl = document.querySelector(`.task[data-gid="${gid}"]`);
+  cb.disabled = true;
+  rowEl.style.opacity = ".45"; rowEl.style.textDecoration = "line-through";
+  try{
+    await post("/api/asana/complete", {taskGid: gid});
+    setTimeout(()=>rowEl.remove(), 800);
+  }catch(e){
+    cb.checked = false; cb.disabled = false;
+    rowEl.style.opacity = ""; rowEl.style.textDecoration = "";
+    alert("Could not complete task: "+e.message);
+  }
+};
 window.dismissMail = async id => {
   document.querySelector(`.mail[data-id="${id}"]`)?.remove();
   try{ await post("/api/dismiss", {threadId:id}); }catch(e){ alert("Could not hide: "+e.message); }
@@ -321,6 +385,7 @@ async function load(fresh){
       (err ? `<div class="srcerr">Source error: ${esc(err)}</div>` : "") + html;
     paint("calendar", renderCalendar(data.calendar), data.errors?.calendar);
     paint("inbox", renderInbox(data.inbox), data.errors?.inbox);
+    paint("goals", renderGoals(data.asana), data.errors?.asana);
     paint("asana", renderAsana(data.asana), data.errors?.asana);
     paint("kpis", renderKpis(data.kpis), data.errors?.kpis);
   } catch(e){

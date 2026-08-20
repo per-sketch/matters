@@ -199,15 +199,29 @@ async function fetchCalendar() {
 const NOISE_SUBJECT = /^(tackat (ja|nej)|uppdaterad inbjudan|inbjudan:|avbokat|anteckningar:|notes:|accepted:|declined:|updated invitation)/i;
 const NOISE_SENDER = /(gemini-notes@|calendar-notification@|no-?reply.*anthropic|@mail\.anthropic\.com)/i;
 
+function bodyText(m) {
+  const parts = [];
+  const walk = (p) => {
+    if (!p) return;
+    if (p.mimeType === "text/plain" && p.body?.data) parts.push(Buffer.from(p.body.data, "base64url").toString("utf8"));
+    (p.parts || []).forEach(walk);
+  };
+  walk(m.payload);
+  if (!parts.length && m.payload?.body?.data) parts.push(Buffer.from(m.payload.body.data, "base64url").toString("utf8"));
+  return parts.join("\n").replace(/\s+/g, " ").trim();
+}
+
 async function fetchInbox() {
   const list = await gfetch("https://gmail.googleapis.com/gmail/v1/users/me/threads?" +
     new URLSearchParams({ q: "in:inbox newer_than:2d", maxResults: "25" }));
   const dismissed = await getDismissed();
+  const wantBodies = Boolean(ANTHROPIC_API_KEY);
   let noiseCount = 0, dismissedCount = 0;
   const items = [];
   for (const t of list.threads || []) {
     if (dismissed.has(t.id)) { dismissedCount++; continue; }
-    const th = await gfetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${t.id}?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date`);
+    const th = await gfetch(`https://gmail.googleapis.com/gmail/v1/users/me/threads/${t.id}?` +
+      (wantBodies ? "format=full" : "format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date"));
     const msgs = th.messages || [];
     if (!msgs.length) continue;
     const header = (m, name) => (m.payload?.headers || []).find((h) => h.name.toLowerCase() === name)?.value || "";
@@ -224,14 +238,16 @@ async function fetchInbox() {
       from: from.replace(/<.*>/, "").trim() || fromEmail,
       date: Number(last.internalDate) || null,
       snippet: (last.snippet || "").slice(0, 200),
+      body: wantBodies ? bodyText(last).slice(0, 1200) : null,
       lastIsMine, anySent, unread,
       link: `https://mail.google.com/mail/u/0/#all/${t.id}`,
     });
   }
-  const triaged = await triage(items);
+  const { triaged, sortedOutCount } = await triage(items);
+  triaged.forEach((m) => delete m.body);
   const order = { "needs reply": 0, action: 1, "new reply": 2, unread: 3, fyi: 4, "awaiting reply": 5, answered: 6 };
   triaged.sort((a, b) => (order[a.badge] ?? 9) - (order[b.badge] ?? 9) || (b.date || 0) - (a.date || 0));
-  return { items: triaged.slice(0, 12), noiseCount, dismissedCount, triageMode: ANTHROPIC_API_KEY ? "claude" : "rules" };
+  return { items: triaged.slice(0, 12), noiseCount, dismissedCount, sortedOutCount, triageMode: ANTHROPIC_API_KEY ? "claude" : "rules" };
 }
 
 function ruleBadge(m) {
@@ -243,22 +259,24 @@ function ruleBadge(m) {
 }
 
 async function triage(items) {
-  if (!ANTHROPIC_API_KEY || !items.length) return items.map((m) => ({ ...m, badge: ruleBadge(m), summary: null }));
+  if (!ANTHROPIC_API_KEY || !items.length)
+    return { triaged: items.map((m) => ({ ...m, badge: ruleBadge(m), summary: null })), sortedOutCount: 0 };
   try {
     const input = items.map((m) => ({
-      id: m.id, subject: m.subject, from: m.from, snippet: m.snippet,
+      id: m.id, subject: m.subject, from: m.from, body: m.body || m.snippet,
       i_sent_the_last_message: m.lastIsMine, i_replied_earlier_in_thread: m.anySent, unread: m.unread,
     }));
     const r = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: { "x-api-key": ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01", "content-type": "application/json" },
       body: JSON.stringify({
-        model: ANTHROPIC_MODEL, max_tokens: 1500,
+        model: ANTHROPIC_MODEL, max_tokens: 2000,
         messages: [{ role: "user", content:
-          `Triage these email threads for Per (CEO). For each, pick ONE badge:
-"needs reply" (someone asked Per something he hasn't answered), "action" (something to do, e.g. access request, send an invite, pay), "awaiting reply" (Per replied, waiting on others), "new reply" (new message in a thread Per is active in), "fyi".
-Also write a one-line summary (max 15 words, same language as the email).
-Reply with ONLY a JSON array: [{"id":"...","badge":"...","summary":"..."}]. No other text.
+          `You are triaging email threads for Per, CEO of Buddy (Swedish fintech). Read each thread's latest message body and decide:
+1. "important": true only if this genuinely matters to Per right now — someone waiting on him, a decision, a deal/legal/board/recruiting matter, money to act on. Newsletters, event promos, automated notices, routine confirmations, pure FYI-noise => false.
+2. "badge" (only for important ones): "needs reply" (open question to Per), "action" (concrete thing to do), "awaiting reply" (Per replied, ball with others), "new reply" (update in an active thread), "fyi" (important to know, nothing to do).
+3. "summary": one line, max 15 words, same language as the email, stating what it is and what Per should do.
+Reply with ONLY a JSON array: [{"id":"...","important":true/false,"badge":"...","summary":"..."}]. No other text.
 Threads: ${JSON.stringify(input)}` }],
       }),
     });
@@ -267,10 +285,16 @@ Threads: ${JSON.stringify(input)}` }],
     const text = (j.content || []).map((c) => c.text || "").join("");
     const arr = JSON.parse(text.slice(text.indexOf("["), text.lastIndexOf("]") + 1));
     const byId = Object.fromEntries(arr.map((x) => [x.id, x]));
-    return items.map((m) => ({ ...m, badge: byId[m.id]?.badge || ruleBadge(m), summary: byId[m.id]?.summary || null }));
+    const triaged = [], out = [];
+    for (const m of items) {
+      const v = byId[m.id];
+      if (v && v.important === false) { out.push(m); continue; }
+      triaged.push({ ...m, badge: v?.badge || ruleBadge(m), summary: v?.summary || null });
+    }
+    return { triaged, sortedOutCount: out.length };
   } catch (e) {
     console.error("claude triage failed, falling back to rules:", e.message);
-    return items.map((m) => ({ ...m, badge: ruleBadge(m), summary: null }));
+    return { triaged: items.map((m) => ({ ...m, badge: ruleBadge(m), summary: null })), sortedOutCount: 0 };
   }
 }
 
@@ -329,19 +353,68 @@ async function asanaGet(path) {
   if (!r.ok) throw new Error(`Asana ${r.status}: ${(await r.text()).slice(0, 300)}`);
   return (await r.json()).data;
 }
+async function asanaPut(path, body) {
+  const r = await fetch(`https://app.asana.com/api/1.0${path}`, {
+    method: "PUT",
+    headers: { Authorization: `Bearer ${ASANA_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ data: body }),
+  });
+  if (!r.ok) throw new Error(`Asana ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  return (await r.json()).data;
+}
+
+async function asanaPost(path, body) {
+  const r = await fetch(`https://app.asana.com/api/1.0${path}`, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${ASANA_TOKEN}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ data: body }),
+  });
+  if (!r.ok) throw new Error(`Asana ${r.status}: ${(await r.text()).slice(0, 300)}`);
+  return (await r.json()).data;
+}
+
+app.post("/api/asana/move", requireAuth, async (req, res) => {
+  try {
+    const { taskGid, sectionGid } = req.body || {};
+    if (!/^\d+$/.test(String(taskGid || "")) || !/^\d+$/.test(String(sectionGid || "")))
+      return res.status(400).json({ error: "taskGid and sectionGid required" });
+    await asanaPost(`/sections/${sectionGid}/addTask`, { task: taskGid });
+    cache = { at: 0, data: null };
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.post("/api/asana/complete", requireAuth, async (req, res) => {
+  try {
+    const { taskGid } = req.body || {};
+    if (!/^\d+$/.test(String(taskGid || ""))) return res.status(400).json({ error: "taskGid required" });
+    const t = await asanaPut(`/tasks/${taskGid}`, { completed: true });
+    cache = { at: 0, data: null };
+    res.json({ ok: true, name: t.name });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
 async function fetchAsana() {
-  const tasks = await asanaGet(`/tasks?assignee=me&workspace=${ASANA_WORKSPACE}&completed_since=now&limit=100&opt_fields=name,due_on,permalink_url,assignee_section.name`);
+  const tasks = await asanaGet(`/tasks?assignee=me&workspace=${ASANA_WORKSPACE}&completed_since=now&limit=100&opt_fields=name,due_on,permalink_url,assignee_section.name,custom_fields.name,custom_fields.display_value`);
   const secName = (t) => (t.assignee_section?.name || "").toLowerCase();
-  const todaySec = tasks.filter((t) => /today|idag/.test(secName(t)));
-  const weekSec = tasks.filter((t) => /week|vecka/.test(secName(t)));
-  const dated = tasks.filter((t) => t.due_on).sort((a, b) => a.due_on.localeCompare(b.due_on));
+  const active = tasks.filter((t) => !/done|klar/.test(secName(t)));
+  const prio = (t) => t.custom_fields?.find((f) => f.name === "Priority")?.display_value || "";
+  const todaySec = active.filter((t) => /today|idag/.test(secName(t)));
+  const todayIds = new Set(todaySec.map((t) => t.gid));
+  const highPrio = active.filter((t) => /^high$/i.test(prio(t)) && !todayIds.has(t.gid));
   const goals = await asanaGet(`/tasks?project=${ASANA_GOALS_PROJECT}&opt_fields=name,completed,due_on,permalink_url,assignee.name,memberships.section.name,custom_fields.name,custom_fields.display_value`);
   const cf = (g, n) => g.custom_fields?.find((f) => f.name === n)?.display_value || "";
+  const shape = (t) => ({
+    gid: t.gid, name: t.name, due: t.due_on, link: t.permalink_url,
+    sectionGid: t.assignee_section?.gid || null, section: t.assignee_section?.name || "",
+  });
+  // distinct My Tasks sections (from live tasks), DONE-style sections excluded from move targets
+  const sectionMap = new Map();
+  for (const t of tasks) if (t.assignee_section?.gid && !/done|klar/.test(secName(t))) sectionMap.set(t.assignee_section.gid, t.assignee_section.name);
   return {
-    today: todaySec.map((t) => ({ name: t.name, due: t.due_on, link: t.permalink_url })),
-    thisWeek: weekSec.map((t) => ({ name: t.name, due: t.due_on, link: t.permalink_url })),
-    dated: dated.slice(0, 8).map((t) => ({ name: t.name, due: t.due_on, link: t.permalink_url })),
-    openCount: tasks.length,
+    today: todaySec.map(shape),
+    highPrio: highPrio.map(shape),
+    sections: [...sectionMap].map(([gid, name]) => ({ gid, name })),
+    openCount: active.length,
     goals: goals.filter((g) => !g.completed).map((g) => ({
       name: g.name, link: g.permalink_url, owner: g.assignee?.name || "",
       section: g.memberships?.[0]?.section?.name || "—",
@@ -382,16 +455,19 @@ async function mcpEnsure() {
   }).catch(() => {});
   mcpReady = true;
 }
-async function queryMetric(metrics, grain, lastN) {
+async function queryMetric(metrics, grain, lastN, comparison) {
   await mcpEnsure();
-  const result = await mcpRpc("tools/call", { name: "query_metric", arguments: { metrics, grain, period: { type: "relative", lastN } } }, Date.now());
+  const args = { metrics, grain, period: { type: "relative", lastN } };
+  if (comparison) args.comparison = comparison;
+  const result = await mcpRpc("tools/call", { name: "query_metric", arguments: args }, Date.now());
   const textPart = (result.content || []).find((c) => c.type === "text")?.text;
   const data = result.structuredContent || (textPart ? JSON.parse(textPart) : null);
   if (!data?.rows) throw new Error("Unexpected query_metric response");
   return data;
 }
 async function fetchKpis() {
-  const [dayCounts, dayRev, weekCounts, weekMrr, weekChurn, weekFunnel, weekTrialConv] = await Promise.all([
+  const [dayCounts, dayRev, weekCounts, weekMrr, weekChurn, weekFunnel, weekTrialConv,
+         moMau, moMrr, moRev, moSubs] = await Promise.all([
     queryMetric(["active_users", "new_subscribers", "trial_starts"], "day", 14),
     queryMetric(["net_revenue_recognized"], "day", 14),
     queryMetric(["active_paying_users", "net_new_subscribers"], "week", 12),
@@ -399,12 +475,26 @@ async function fetchKpis() {
     queryMetric(["mrr_churn"], "week", 12),
     queryMetric(["installs"], "week", 12),
     queryMetric(["pct_trial_to_paying"], "week", 12),
+    queryMetric(["active_users"], "month", 12, "previous_year"),
+    queryMetric(["mrr"], "month", 12, "previous_year"),
+    queryMetric(["net_revenue_recognized"], "month", 12, "previous_year"),
+    queryMetric(["new_subscribers"], "month", 12, "previous_year"),
   ]);
-  const series = (q, key) => ({
-    values: q.rows.map((r) => r[key] ?? null),
-    buckets: q.rows.map((r) => r.bucket),
-  });
+  const series = (q, key) => {
+    const compByBucket = Object.fromEntries((q.comparisonRows || []).map((r) => [r.bucket, r[key] ?? null]));
+    return {
+      values: q.rows.map((r) => r[key] ?? null),
+      buckets: q.rows.map((r) => r.bucket),
+      compare: (q.comparisonRows || []).length ? q.rows.map((r) => compByBucket[r.bucket] ?? null) : undefined,
+    };
+  };
   return {
+    monthly: {
+      mau: series(moMau, "active_users"),
+      mrr: series(moMrr, "mrr"),
+      netRevenue: series(moRev, "net_revenue_recognized"),
+      newSubs: series(moSubs, "new_subscribers"),
+    },
     daily: {
       dau: series(dayCounts, "active_users"),
       newSubs: series(dayCounts, "new_subscribers"),
