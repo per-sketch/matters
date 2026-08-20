@@ -1,0 +1,251 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Per — Daily Dashboard</title>
+<style>
+  :root{
+    --bg:#f6f7f9; --surface:#ffffff; --border:#e4e7ec;
+    --ink:#16181d; --ink-2:#5c6370; --ink-3:#8a919c;
+    --accent:#2f5fd0; --accent-soft:#e8eefc;
+    --good:#1a7f4e; --good-soft:#e4f3ec;
+    --warn:#a05a00; --warn-soft:#fbf0de;
+    --serious:#b3352b; --serious-soft:#fdeae8;
+    --neutral-soft:#eef0f3; --radius:12px;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Inter,Roboto,sans-serif;background:var(--bg);color:var(--ink);font-size:14px;line-height:1.45;padding:28px 24px 48px}
+  .wrap{max-width:1080px;margin:0 auto}
+  header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:18px}
+  h1{font-size:20px;font-weight:650;letter-spacing:-0.01em}
+  .updated{color:var(--ink-3);font-size:12.5px}
+  #refreshbtn{font:inherit;font-size:12.5px;font-weight:600;color:var(--accent);background:var(--accent-soft);border:none;border-radius:8px;padding:6px 12px;cursor:pointer}
+  #refreshbtn:disabled{opacity:.5;cursor:wait}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:20px}
+  .tile{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:14px 16px}
+  .tile .label{font-size:11.5px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:6px}
+  .tile .value{font-size:22px;font-weight:650}
+  .tile .sub{font-size:12.5px;color:var(--ink-2);margin-top:3px}
+  .cols{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px}
+  @media(max-width:860px){.cols{grid-template-columns:1fr}}
+  .panel{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:18px 18px 12px}
+  .panel h2{font-size:14.5px;font-weight:650;margin-bottom:2px}
+  .panel .src{font-size:11.5px;color:var(--ink-3);margin-bottom:12px}
+  .day{font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-2);margin:14px 0 6px;padding-top:10px;border-top:1px solid var(--border)}
+  .day.first{border-top:none;padding-top:0;margin-top:4px}
+  .ev{display:flex;gap:12px;padding:7px 0;align-items:baseline}
+  .ev .time{flex:0 0 92px;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:13px}
+  .ev .title{font-weight:530}
+  .ev .meta{color:var(--ink-3);font-size:12.5px}
+  .ev.past{opacity:.45}
+  .badge{display:inline-block;font-size:11px;font-weight:600;padding:2px 8px;border-radius:999px;vertical-align:1px;margin-left:6px;white-space:nowrap}
+  .b-accent{background:var(--accent-soft);color:var(--accent)}
+  .b-warn{background:var(--warn-soft);color:var(--warn)}
+  .b-good{background:var(--good-soft);color:var(--good)}
+  .b-neutral{background:var(--neutral-soft);color:var(--ink-2)}
+  .b-serious{background:var(--serious-soft);color:var(--serious)}
+  .mail{padding:10px 0;border-top:1px solid var(--border)}
+  .mail.first{border-top:none}
+  .mail .from{font-weight:600;font-size:13px}
+  .mail .subj{margin:2px 0 2px}
+  .mail .snip{color:var(--ink-2);font-size:12.5px}
+  .mail .when{color:var(--ink-3);font-size:11.5px;float:right}
+  .noise{margin-top:12px;padding:10px 12px;background:var(--neutral-soft);border-radius:8px;font-size:12.5px;color:var(--ink-2);margin-bottom:8px}
+  .task{display:flex;gap:12px;padding:7px 0;align-items:baseline}
+  .task .due{flex:0 0 92px;font-variant-numeric:tabular-nums;color:var(--ink-2);font-size:13px}
+  .statusbox{border:1px solid var(--border);border-radius:8px;padding:12px;margin-top:8px;background:var(--bg);font-size:12.5px;color:var(--ink-2)}
+  .statusbox .pname{font-weight:600;font-size:13px;margin-bottom:4px;color:var(--ink)}
+  .kpigrid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-top:6px}
+  .kpi{border:1px solid var(--border);border-radius:8px;padding:10px 12px;background:var(--surface)}
+  .kpi .klabel{font-size:11.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3)}
+  .kpi .kval{font-size:19px;font-weight:650;margin-top:2px}
+  .kpi .kdelta{font-size:12px;margin-top:1px;color:var(--ink-2)}
+  .kpi .pos{color:var(--good)} .kpi .neg{color:var(--serious)}
+  footer{margin-top:20px;color:var(--ink-3);font-size:12px;line-height:1.6}
+  a{color:inherit;text-decoration:none;border-bottom:1px dotted #c9cfd8}
+  a:hover{border-bottom-color:var(--accent);color:var(--accent)}
+  .srcerr{padding:10px 12px;background:var(--serious-soft);color:var(--serious);border-radius:8px;font-size:12.5px;margin-bottom:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Per — Daily Dashboard</h1>
+    <div style="display:flex;align-items:center;gap:10px">
+      <div class="updated" id="updated">Loading…</div>
+      <button id="refreshbtn" title="Fetches fresh data from all four sources right now.">↻ Refresh</button>
+    </div>
+  </header>
+  <div class="tiles" id="tiles"></div>
+  <div class="cols">
+    <div class="panel"><h2>Calendar</h2><div class="src">Google Calendar · live</div><div id="calendar"></div></div>
+    <div class="panel"><h2>Inbox — what matters</h2><div class="src">Gmail · last 2 days, rule-based triage, RSVP noise filtered</div><div id="inbox"></div></div>
+  </div>
+  <div class="cols">
+    <div class="panel"><h2>Asana — your deadlines</h2><div class="src">Asana · tasks assigned to you</div><div id="asana"></div></div>
+    <div class="panel"><h2>KPIs — daily &amp; weekly <span class="badge b-good">LIVE</span></h2><div class="src">Buddy Analytics · governed semantic layer</div><div id="kpis"></div></div>
+  </div>
+  <footer>All panels fetch live on load and on ↻ Refresh. Inbox triage here is rule-based (unlike the Claude-curated version). Gmail links assume you're signed into the receiving account.</footer>
+</div>
+<script>
+const TZ = "Europe/Stockholm";
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmtTime = iso => new Intl.DateTimeFormat("sv-SE",{timeZone:TZ,hour:"2-digit",minute:"2-digit"}).format(new Date(iso));
+const fmtDay  = iso => new Intl.DateTimeFormat("en-GB",{timeZone:TZ,weekday:"short",day:"numeric",month:"short"}).format(new Date(iso));
+const ymd     = iso => new Intl.DateTimeFormat("sv-SE",{timeZone:TZ}).format(new Date(iso));
+const nf = new Intl.NumberFormat("sv-SE");
+const money = v => "$" + nf.format(Math.round(v));
+const pct = v => (v*100).toFixed(2) + "%";
+
+function badgeClass(b){
+  return {action:"b-accent","new reply":"b-warn",unread:"b-warn","you replied":"b-neutral",fyi:"b-neutral"}[b] || "b-neutral";
+}
+
+function renderCalendar(events){
+  if(!events) return "";
+  const today = ymd(new Date().toISOString());
+  const now = Date.now();
+  const groups = {};
+  for(const e of events){
+    const d = ymd(e.start);
+    (groups[d] = groups[d] || []).push(e);
+  }
+  const days = Object.keys(groups).sort();
+  let html = "", first = true, nextMarked = false;
+  for(const d of days){
+    const label = d === today ? "Today · " + fmtDay(groups[d][0].start) : fmtDay(groups[d][0].start);
+    html += `<div class="day${first?" first":""}">${esc(label)}</div>`;
+    first = false;
+    for(const e of groups[d]){
+      const past = new Date(e.end).getTime() < now;
+      let badge = "";
+      if(!past && !nextMarked){ badge = '<span class="badge b-accent">next</span>'; nextMarked = true; }
+      if(/deadline/i.test(e.summary)) badge += '<span class="badge b-serious">deadline</span>';
+      const declined = e.declined?.length ? `<div class="meta">Declined: ${esc(e.declined.join(", "))}</div>` : "";
+      const time = e.allDay ? "all day" : `${fmtTime(e.start)}–${fmtTime(e.end)}`;
+      html += `<div class="ev${past?" past":""}"><span class="time">${time}</span><span>
+        <a class="title" href="${esc(e.link)}" target="_blank">${esc(e.summary)}</a>${badge}${declined}</span></div>`;
+    }
+  }
+  return html || '<div class="noise">No events in the next 7 days.</div>';
+}
+
+function renderInbox(inbox){
+  if(!inbox) return "";
+  let html = "";
+  inbox.items.forEach((m,i)=>{
+    const when = m.date ? new Intl.DateTimeFormat("sv-SE",{timeZone:TZ,day:"numeric",month:"short",hour:"2-digit",minute:"2-digit"}).format(new Date(m.date)) : "";
+    html += `<div class="mail${i===0?" first":""}"><span class="when">${when}</span>
+      <div class="from">${esc(m.from)} <span class="badge ${badgeClass(m.badge)}">${esc(m.badge)}</span></div>
+      <div class="subj"><a href="${esc(m.link)}" target="_blank">${esc(m.subject)}</a></div>
+      <div class="snip">${esc(m.snippet)}</div></div>`;
+  });
+  html += `<div class="noise">Filtered out: ${inbox.noiseCount} RSVP/notification emails.</div>`;
+  return html;
+}
+
+function renderAsana(a){
+  if(!a) return "";
+  const today = ymd(new Date().toISOString());
+  let html = "";
+  for(const t of a.dated){
+    const overdue = t.due < today;
+    html += `<div class="task"><span class="due">${esc(t.due)}</span><span>
+      <a class="title" href="${esc(t.link)}" target="_blank">${esc(t.name)}</a>
+      ${overdue?'<span class="badge b-serious">overdue</span>':""}</span></div>`;
+  }
+  html += `<div class="noise">Plus ${a.undatedCount} open tasks without due dates.</div>`;
+  html += `<div class="statusbox"><div class="pname"><a href="${esc(a.projectLink)}" target="_blank">Company Goals &amp; Delivery Plan — H2 2026</a></div>`;
+  if(!a.goals.length) html += "<p>No goals on the board yet.</p>";
+  for(const g of a.goals){
+    const st = g.status ? `<span class="badge ${/on.?track/i.test(g.status)?"b-good":/risk/i.test(g.status)?"b-warn":"b-serious"}">${esc(g.status)}</span>` : "";
+    html += `<p><a href="${esc(g.link)}" target="_blank">${esc(g.name.length>80?g.name.slice(0,80)+"…":g.name)}</a> ${st} ${esc(g.completion)}${g.comment?` · ${esc(g.comment.length>90?g.comment.slice(0,90)+"…":g.comment)}`:""}</p>`;
+  }
+  html += "</div>";
+  return html;
+}
+
+function kpiTile(label, p, opts={}){
+  if(!p || p.curr == null) return `<div class="kpi"><div class="klabel">${label}</div><div class="kval">unavailable</div></div>`;
+  const fmt = opts.money ? money : opts.pct ? pct : v => nf.format(Math.round(v));
+  let deltaHtml = "";
+  if(p.prev != null && p.prev !== 0){
+    const change = (p.curr - p.prev) / Math.abs(p.prev);
+    const arrow = change >= 0 ? "▲" : "▼";
+    const goodUp = opts.goodDirection !== "down";
+    const isGood = (change >= 0) === goodUp;
+    deltaHtml = `<div class="kdelta ${isGood?"pos":"neg"}">${arrow} ${(Math.abs(change)*100).toFixed(1)}% (${fmt(p.prev)})</div>`;
+  } else if(p.prev != null){
+    deltaHtml = `<div class="kdelta">prev: ${fmt(p.prev)}</div>`;
+  }
+  return `<div class="kpi"><div class="klabel">${label}</div><div class="kval">${fmt(p.curr)}</div>${deltaHtml}</div>`;
+}
+
+function renderKpis(k){
+  if(!k) return "";
+  const d = k.daily, w = k.weekly;
+  return `
+    <div class="day first">Daily · ${esc(d.dau.bucket||"")} vs ${esc(d.dau.prevBucket||"")}</div>
+    <div class="kpigrid">
+      ${kpiTile("Active Users (DAU)", d.dau)}
+      ${kpiTile("New Subscribers", d.newSubs)}
+      ${kpiTile("Trial Starts", d.trials)}
+      ${kpiTile("Net Revenue", d.netRevenue, {money:true})}
+    </div>
+    <div class="day">Weekly · w/c ${esc(w.wapu.bucket||"")} vs w/c ${esc(w.wapu.prevBucket||"")}</div>
+    <div class="kpigrid">
+      ${kpiTile("WAPU · North Star", w.wapu)}
+      ${kpiTile("MRR", w.mrr, {money:true})}
+      ${kpiTile("% MRR Churn", w.mrrChurn, {pct:true, goodDirection:"down"})}
+      ${kpiTile("Net New Subscribers", w.netNewSubs)}
+    </div>
+    <div class="noise" style="margin-top:12px">Latest day's subscription figures can still fill in as store data lands.</div>`;
+}
+
+function renderTiles(data){
+  const t = [];
+  const now = Date.now();
+  const next = (data.calendar||[]).find(e => new Date(e.end).getTime() > now);
+  t.push({label:"Next up", value: next ? (next.allDay ? "Today" : fmtTime(next.start)) : "—", sub: next ? next.summary : "Nothing upcoming"});
+  const wapu = data.kpis?.weekly?.wapu;
+  t.push({label:"North Star · WAPU", value: wapu?.curr!=null ? nf.format(wapu.curr) : "—",
+    sub: wapu?.prev!=null ? `${wapu.curr>=wapu.prev?"▲":"▼"} ${(Math.abs((wapu.curr-wapu.prev)/wapu.prev)*100).toFixed(1)}% w/w · target 100k Jan 2029` : "target 100k Jan 2029"});
+  const actions = (data.inbox?.items||[]).filter(m=>["action","new reply","unread"].includes(m.badge));
+  t.push({label:"Inbox — needs you", value: String(actions.length), sub: actions.slice(0,2).map(m=>m.subject).join(" · ") || "Nothing waiting"});
+  const dl = (data.asana?.dated||[])[0];
+  t.push({label:"Next deadline", value: dl ? dl.due.slice(5) : "—", sub: dl ? dl.name : ""});
+  document.getElementById("tiles").innerHTML = t.map(x =>
+    `<div class="tile"><div class="label">${esc(x.label)}</div><div class="value">${esc(x.value)}</div><div class="sub">${esc(x.sub||"")}</div></div>`).join("");
+}
+
+let refreshTimer = null;
+async function load(fresh){
+  const btn = document.getElementById("refreshbtn");
+  btn.disabled = true; btn.textContent = "…";
+  try{
+    const r = await fetch("/api/data" + (fresh ? "?fresh=1" : ""));
+    if(r.status === 401 || r.redirected){ location.href = "/login"; return; }
+    const data = await r.json();
+    document.getElementById("updated").textContent =
+      "Data pulled " + new Intl.DateTimeFormat("sv-SE",{timeZone:TZ,dateStyle:"medium",timeStyle:"short"}).format(new Date(data.pulledAt));
+    renderTiles(data);
+    const paint = (id, html, err) => document.getElementById(id).innerHTML =
+      (err ? `<div class="srcerr">Source error: ${esc(err)}</div>` : "") + html;
+    paint("calendar", renderCalendar(data.calendar), data.errors?.calendar);
+    paint("inbox", renderInbox(data.inbox), data.errors?.inbox);
+    paint("asana", renderAsana(data.asana), data.errors?.asana);
+    paint("kpis", renderKpis(data.kpis), data.errors?.kpis);
+  } catch(e){
+    document.getElementById("updated").textContent = "Load failed: " + e.message;
+  } finally {
+    btn.disabled = false; btn.textContent = "↻ Refresh";
+  }
+}
+document.getElementById("refreshbtn").addEventListener("click", ()=>load(true));
+load(false);
+// auto-reload data every 15 minutes while the tab is open
+setInterval(()=>load(false), 15*60*1000);
+</script>
+</body>
+</html>
